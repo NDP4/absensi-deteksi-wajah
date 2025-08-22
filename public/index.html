@@ -18,6 +18,10 @@
                 <div class="video-container relative w-full max-w-2xl mx-auto aspect-video rounded-lg overflow-hidden shadow-inner border border-gray-200 bg-gray-900">
                     <video id="video" class="w-full h-full" autoplay muted playsinline></video>
                     <canvas id="canvas" class="absolute top-0 left-0 w-full h-full"></canvas>
+                    <div id="liveness-prompt" class="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center text-white text-xl font-bold hidden">
+                        Berkedip untuk verifikasi...
+                    </div>
+                    <div>Nilai EAR: <span id="ear-value" class="font-bold">--</span></div>
                 </div>
 
                 <div class="mt-6 text-center">

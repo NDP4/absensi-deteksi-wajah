@@ -3,6 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const video = document.getElementById('video');
     const registerButton = document.getElementById('registerButton');
     const attendanceTableBody = document.getElementById('attendance-table-body');
+    const livenessPrompt = document.getElementById('liveness-prompt');
 
     // Modal elements
     const modal = document.getElementById('modal');
@@ -17,8 +18,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const attendanceLog = new Map();
     let detectedName = null;
     let clockInterval;
+    let isLivenessCheckRunning = false;
 
-    // --- Toast Notification Functions (from previous step) ---
+    // --- Toast Notification Functions ---
     const toast = document.getElementById('toast');
     const toastMessage = document.getElementById('toast-message');
     const toastIcon = document.getElementById('toast-icon');
@@ -61,6 +63,102 @@ document.addEventListener('DOMContentLoaded', () => {
     checkoutButton.addEventListener('click', () => performCheck('check-out'));
     cancelButton.addEventListener('click', hideModal);
 
+    // --- Liveness Detection ---
+    function getEyeAspectRatio(landmarks) {
+        const leftEye = landmarks.getLeftEye();
+        const rightEye = landmarks.getRightEye();
+        return (eyeAspectRatio(leftEye) + eyeAspectRatio(rightEye)) / 2.0;
+    }
+
+    function eyeAspectRatio(eye) {
+        const A = faceapi.euclideanDistance([eye[1].x, eye[1].y], [eye[5].x, eye[5].y]);
+        const B = faceapi.euclideanDistance([eye[2].x, eye[2].y], [eye[4].x, eye[4].y]);
+        const C = faceapi.euclideanDistance([eye[0].x, eye[0].y], [eye[3].x, eye[3].y]);
+        return (A + B) / (2.0 * C);
+    }
+
+    function getMouthAspectRatio(landmarks) {
+        const mouth = landmarks.getMouth();
+        const A = faceapi.euclideanDistance([mouth[13].x, mouth[13].y], [mouth[19].x, mouth[19].y]);
+        const B = faceapi.euclideanDistance([mouth[14].x, mouth[14].y], [mouth[18].x, mouth[18].y]);
+        const C = faceapi.euclideanDistance([mouth[15].x, mouth[15].y], [mouth[17].x, mouth[17].y]);
+        const D = faceapi.euclideanDistance([mouth[12].x, mouth[12].y], [mouth[16].x, mouth[16].y]);
+        return (A + B + C) / (2.0 * D);
+    }
+
+    function performLivenessCheck() {
+        return new Promise((resolve) => {
+            const EAR_THRESHOLD = 0.28;
+            const EAR_CONSEC_FRAMES = 2;
+            const MAR_THRESHOLD = 0.5;
+            const Y_MOVEMENT_THRESHOLD = 10; // Pixels for head nod
+
+            let frameCounter = 0;
+            let blinkDetected = false;
+            let mouthOpenDetected = false;
+            let nodDetected = false;
+
+            let prevNoseY = 0;
+            let nodDirection = 'none'; // 'up', 'down', 'none'
+            let nodSequence = { down: false, up: false };
+
+            livenessPrompt.textContent = 'Berkedip untuk verifikasi...';
+
+            const livenessInterval = setInterval(async () => {
+                const detections = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 })).withFaceLandmarks();
+                if (!detections) return;
+
+                const ear = getEyeAspectRatio(detections.landmarks);
+                const mar = getMouthAspectRatio(detections.landmarks);
+                const noseY = detections.landmarks.getNose()[3].y; // Y-coordinate of nose tip
+
+                if (!blinkDetected) {
+                    livenessPrompt.textContent = `Berkedip... (EAR: ${ear.toFixed(2)})`;
+                    if (ear < EAR_THRESHOLD) {
+                        frameCounter++;
+                    } else {
+                        if (frameCounter >= EAR_CONSEC_FRAMES) {
+                            blinkDetected = true;
+                            livenessPrompt.textContent = 'Sekarang, buka mulut...';
+                        }
+                        frameCounter = 0;
+                    }
+                } else if (!mouthOpenDetected) {
+                    livenessPrompt.textContent = `Buka mulut... (MAR: ${mar.toFixed(2)})`;
+                    if (mar > MAR_THRESHOLD) {
+                        mouthOpenDetected = true;
+                        livenessPrompt.textContent = 'Sekarang, anggukkan kepala...';
+                        prevNoseY = noseY; // Initialize for nod detection
+                    }
+                } else if (!nodDetected) {
+                    livenessPrompt.textContent = `Anggukkan kepala... (Y: ${noseY.toFixed(2)})`;
+                    if (prevNoseY !== 0) {
+                        const deltaY = noseY - prevNoseY;
+                        if (deltaY > Y_MOVEMENT_THRESHOLD && nodDirection !== 'down') {
+                            nodDirection = 'down';
+                            nodSequence.down = true;
+                        } else if (deltaY < -Y_MOVEMENT_THRESHOLD && nodDirection !== 'up' && nodSequence.down) {
+                            nodDirection = 'up';
+                            nodSequence.up = true;
+                        }
+
+                        if (nodSequence.down && nodSequence.up) {
+                            nodDetected = true;
+                            clearInterval(livenessInterval);
+                            resolve({ blink: true, mouthOpen: true, nod: true });
+                        }
+                    }
+                    prevNoseY = noseY;
+                }
+            }, 100); // Reduced interval for faster detection
+
+            setTimeout(() => {
+                clearInterval(livenessInterval);
+                resolve({ blink: blinkDetected, mouthOpen: mouthOpenDetected, nod: nodDetected });
+            }, 15000); // 15 second timeout for the whole process
+        });
+    }
+
     // --- Main Application Logic ---
     Promise.all([
         faceapi.nets.tinyFaceDetector.loadFromUri('/models'),
@@ -79,12 +177,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const data = await (await fetch('/data')).json();
             if (data.length > 0) {
-                labeledFaceDescriptors = data.map(d => 
-                    new faceapi.LabeledFaceDescriptors(
-                        d.label,
-                        d.descriptors.map(descriptor => new Float32Array(descriptor))
-                    )
-                );
+                labeledFaceDescriptors = data.map(d => new faceapi.LabeledFaceDescriptors(d.label, d.descriptors.map(descriptor => new Float32Array(descriptor))));
                 faceMatcher = new faceapi.FaceMatcher(labeledFaceDescriptors, 0.6);
                 showToast(`Memuat ${data.length} wajah terdaftar.`, 'success');
             }
@@ -109,12 +202,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const canvas = document.getElementById('canvas');
         const displaySize = { width: video.clientWidth, height: video.clientHeight };
         faceapi.matchDimensions(canvas, displaySize);
-
         setInterval(async () => {
+            if (isLivenessCheckRunning) return;
             const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptors();
             const resizedDetections = faceapi.resizeResults(detections, displaySize);
             canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-
             if (faceMatcher && resizedDetections.length > 0) {
                 const results = resizedDetections.map(d => faceMatcher.findBestMatch(d.descriptor));
                 results.forEach((result, i) => {
@@ -129,31 +221,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function handleAttendance(name) {
         if (modal.classList.contains('hidden') && (!attendanceLog.has(name) || Date.now() - attendanceLog.get(name) > 10000)) {
-            attendanceLog.set(name, Date.now());
-            try {
-                const status = await (await fetch(`/attendance-status/${name}`)).json();
-                if (!status.hasCheckedOut) {
-                    showModal(name, status);
-                }
-            } catch (err) { console.error('Failed to get attendance status'); }
+            isLivenessCheckRunning = true;
+            livenessPrompt.classList.remove('hidden');
+            const livenessResult = await performLivenessCheck();
+            if (livenessResult.blink && livenessResult.mouthOpen && livenessResult.nod) {
+                attendanceLog.set(name, Date.now());
+                try {
+                    const status = await (await fetch(`/attendance-status/${name}`)).json();
+                    if (!status.hasCheckedOut) showModal(name, status);
+                } catch (err) { console.error('Failed to get attendance status'); }
+            } else {
+                showToast(`Verifikasi gagal (kedip: ${livenessResult.blink ? 'berhasil' : 'gagal'}, mulut: ${livenessResult.mouthOpen ? 'berhasil' : 'gagal'}, angguk: ${livenessResult.nod ? 'berhasil' : 'gagal'}). Coba lagi.`, 'error');
+            }
+            livenessPrompt.classList.add('hidden');
+            isLivenessCheckRunning = false;
         }
     }
 
     registerButton.addEventListener('click', async () => {
         const name = prompt('Masukkan nama Anda:');
         if (!name) return showToast('Pendaftaran dibatalkan.', 'info');
-        showToast('Mendeteksi wajah, jangan bergerak... ', 'info');
-        try {
-            const detections = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
-            if (!detections || !detections.descriptor) return showToast('Wajah tidak terdeteksi dengan baik, coba lagi.', 'error');
-            const descriptor = Array.from(detections.descriptor);
-            // Final validation: ensure no invalid values (NaN, Infinity) were stringified to null
-            if (descriptor.includes(null)) return showToast('Kualitas deteksi wajah rendah, silakan coba lagi.', 'error');
-
-            const response = await fetch('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, descriptor }) });
-            if (!response.ok) throw new Error((await response.json()).message);
-            showToast('Wajah berhasil didaftarkan!', 'success');
-            loadRegisteredFaces();
-        } catch (error) { showToast(`Gagal: ${error.message}`, 'error'); }
+        isLivenessCheckRunning = true;
+        livenessPrompt.classList.remove('hidden');
+        const livenessResult = await performLivenessCheck();
+        if (livenessResult.blink && livenessResult.mouthOpen && livenessResult.nod) {
+            showToast('Verifikasi berhasil! Mendeteksi wajah, jangan bergerak...', 'success');
+            try {
+                const detections = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
+                if (!detections || !detections.descriptor) return showToast('Wajah tidak terdeteksi dengan baik, coba lagi.', 'error');
+                const descriptor = Array.from(detections.descriptor);
+                if (descriptor.includes(null)) return showToast('Kualitas deteksi wajah rendah, silakan coba lagi.', 'error');
+                const response = await fetch('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, descriptor }) });
+                if (!response.ok) throw new Error((await response.json()).message);
+                showToast('Wajah berhasil didaftarkan!', 'success');
+                loadRegisteredFaces();
+            } catch (error) { showToast(`Gagal: ${error.message}`, 'error'); }
+        } else {
+            showToast(`Verifikasi gagal (kedip: ${livenessResult.blink ? 'berhasil' : 'gagal'}, mulut: ${livenessResult.mouthOpen ? 'berhasil' : 'gagal'}, angguk: ${livenessResult.nod ? 'berhasil' : 'gagal'}). Coba lagi.`, 'error');
+        }
+        livenessPrompt.classList.add('hidden');
+        isLivenessCheckRunning = false;
     });
 });
