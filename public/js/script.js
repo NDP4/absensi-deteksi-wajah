@@ -1,3 +1,4 @@
+
 document.addEventListener('DOMContentLoaded', () => {
     const video = document.getElementById('video');
     const registerButton = document.getElementById('registerButton');
@@ -116,77 +117,95 @@ document.addEventListener('DOMContentLoaded', () => {
         return (A + B + C) / (2.0 * D);
     }
 
-    function performLivenessCheck() {
+    async function doLivenessCheckStep(promptText, checkFunction, threshold, consecutiveFrames = 1, isNodCheck = false) {
         return new Promise((resolve) => {
-            const EAR_THRESHOLD = 0.28;
-            const EAR_CONSEC_FRAMES = 2;
-            const MAR_THRESHOLD = 0.5;
-            const Y_MOVEMENT_THRESHOLD = 10; // Pixels for head nod
-
             let frameCounter = 0;
-            let blinkDetected = false;
-            let mouthOpenDetected = false;
-            let nodDetected = false;
-
-            let prevNoseY = 0;
-            let nodDirection = 'none'; // 'up', 'down', 'none'
+            let prevValue = 0;
+            let nodDirection = 'none';
             let nodSequence = { down: false, up: false };
 
-            livenessPrompt.textContent = 'Berkedip untuk verifikasi...';
-
-            const livenessInterval = setInterval(async () => {
+            const interval = setInterval(async () => {
                 const detections = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 })).withFaceLandmarks();
-                if (!detections) return;
+                if (!detections) {
+                    livenessPrompt.textContent = `Wajah tidak terdeteksi. ${promptText}`;
+                    return;
+                }
 
-                const ear = getEyeAspectRatio(detections.landmarks);
-                const mar = getMouthAspectRatio(detections.landmarks);
-                const noseY = detections.landmarks.getNose()[3].y; // Y-coordinate of nose tip
+                let currentValue;
+                if (isNodCheck) {
+                    currentValue = detections.landmarks.getNose()[3].y;
+                    livenessPrompt.textContent = `${promptText} (Y: ${currentValue.toFixed(2)})`;
+                } else {
+                    currentValue = checkFunction(detections.landmarks);
+                    livenessPrompt.textContent = `${promptText} (${promptText.includes('kedip') ? 'EAR' : 'MAR'}: ${currentValue.toFixed(2)})`;
+                }
 
-                if (!blinkDetected) {
-                    livenessPrompt.textContent = `Berkedip... (EAR: ${ear.toFixed(2)})`;
-                    if (ear < EAR_THRESHOLD) {
-                        frameCounter++;
-                    } else {
-                        if (frameCounter >= EAR_CONSEC_FRAMES) {
-                            blinkDetected = true;
-                            livenessPrompt.textContent = 'Sekarang, buka mulut...';
-                        }
-                        frameCounter = 0;
-                    }
-                } else if (!mouthOpenDetected) {
-                    livenessPrompt.textContent = `Buka mulut... (MAR: ${mar.toFixed(2)})`;
-                    if (mar > MAR_THRESHOLD) {
-                        mouthOpenDetected = true;
-                        livenessPrompt.textContent = 'Sekarang, anggukkan kepala...';
-                        prevNoseY = noseY; // Initialize for nod detection
-                    }
-                } else if (!nodDetected) {
-                    livenessPrompt.textContent = `Anggukkan kepala... (Y: ${noseY.toFixed(2)})`;
-                    if (prevNoseY !== 0) {
-                        const deltaY = noseY - prevNoseY;
-                        if (deltaY > Y_MOVEMENT_THRESHOLD && nodDirection !== 'down') {
+                let success = false;
+
+                if (isNodCheck) {
+                    if (prevValue !== 0) {
+                        const delta = currentValue - prevValue;
+                        if (delta > threshold && nodDirection !== 'down') {
                             nodDirection = 'down';
                             nodSequence.down = true;
-                        } else if (deltaY < -Y_MOVEMENT_THRESHOLD && nodDirection !== 'up' && nodSequence.down) {
+                        } else if (delta < -threshold && nodDirection !== 'up' && nodSequence.down) {
                             nodDirection = 'up';
                             nodSequence.up = true;
                         }
-
-                        if (nodSequence.down && nodSequence.up) {
-                            nodDetected = true;
-                            clearInterval(livenessInterval);
-                            resolve({ blink: true, mouthOpen: true, nod: true });
-                        }
+                        if (nodSequence.down && nodSequence.up) success = true;
                     }
-                    prevNoseY = noseY;
+                    prevValue = currentValue;
+                } else if (promptText.includes('kedip')) { // Blink check
+                    if (currentValue < threshold) {
+                        frameCounter++;
+                    } else {
+                        if (frameCounter >= consecutiveFrames) success = true;
+                        frameCounter = 0;
+                    }
+                } else { // Mouth open check
+                    if (currentValue > threshold) success = true;
                 }
-            }, 100); // Reduced interval for faster detection
+
+                if (success) {
+                    clearInterval(interval);
+                    resolve(true);
+                }
+            }, 100);
 
             setTimeout(() => {
-                clearInterval(livenessInterval);
-                resolve({ blink: blinkDetected, mouthOpen: mouthOpenDetected, nod: nodDetected });
-            }, 15000); // 15 second timeout for the whole process
+                clearInterval(interval);
+                resolve(false);
+            }, 10000); // 10 second timeout per step
         });
+    }
+
+    async function performLivenessCheck() {
+        let blinkSuccess = false;
+        let mouthSuccess = false;
+        let nodSuccess = false;
+
+        // Blink Check
+        while (!blinkSuccess) {
+            livenessPrompt.textContent = 'Berkedip untuk verifikasi...';
+            blinkSuccess = await doLivenessCheckStep('Berkedip untuk verifikasi...', getEyeAspectRatio, 0.28, 2);
+            if (!blinkSuccess) showToast('Verifikasi kedipan gagal. Coba lagi.', 'error');
+        }
+
+        // Mouth Open Check
+        while (!mouthSuccess) {
+            livenessPrompt.textContent = 'Buka mulut untuk verifikasi...';
+            mouthSuccess = await doLivenessCheckStep('Buka mulut untuk verifikasi...', getMouthAspectRatio, 0.5);
+            if (!mouthSuccess) showToast('Verifikasi buka mulut gagal. Coba lagi.', 'error');
+        }
+
+        // Head Nod Check
+        while (!nodSuccess) {
+            livenessPrompt.textContent = 'Anggukkan kepala untuk verifikasi...';
+            nodSuccess = await doLivenessCheckStep('Anggukkan kepala untuk verifikasi...', null, 10, 1, true); // isNodCheck = true
+            if (!nodSuccess) showToast('Verifikasi anggukan kepala gagal. Coba lagi.', 'error');
+        }
+
+        return { blink: blinkSuccess, mouthOpen: mouthSuccess, nod: nodSuccess };
     }
 
     // --- Main Application Logic ---
