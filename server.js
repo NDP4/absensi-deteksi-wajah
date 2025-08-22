@@ -10,6 +10,12 @@ const dbPath = path.join(__dirname, 'db');
 const facesFilePath = path.join(dbPath, 'faces.json');
 const attendanceFilePath = path.join(dbPath, 'attendance.json');
 
+// Directory for captured images
+const capturedImagesDir = path.join(__dirname, 'captured_images');
+const registrationImagesDir = path.join(capturedImagesDir, 'registrasi', 'wajah');
+const attendanceMasukImagesDir = path.join(capturedImagesDir, 'absen', 'masuk');
+const attendanceKeluarImagesDir = path.join(capturedImagesDir, 'absen', 'keluar');
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
@@ -25,10 +31,23 @@ function readJsonFile(filePath) {
     }
 }
 
+// Helper function to ensure directory exists recursively
+function ensureDirectoryExistence(dirPath) {
+    if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, { recursive: true });
+        console.log(`Directory created: ${dirPath}`);
+    }
+}
+
 // Ensure db directory and files exist on startup
 if (!fs.existsSync(dbPath)) fs.mkdirSync(dbPath);
 if (!fs.existsSync(facesFilePath)) fs.writeFileSync(facesFilePath, '[]');
 if (!fs.existsSync(attendanceFilePath)) fs.writeFileSync(attendanceFilePath, '[]');
+
+// Ensure captured_images directories exist on startup
+ensureDirectoryExistence(registrationImagesDir);
+ensureDirectoryExistence(attendanceMasukImagesDir);
+ensureDirectoryExistence(attendanceKeluarImagesDir);
 
 // --- Face Registration API ---
 app.get('/data', (req, res) => res.sendFile(facesFilePath));
@@ -87,6 +106,41 @@ app.post('/check-out', (req, res) => {
     const { name } = req.body;
     const result = updateAttendance(name, 'checkOut');
     res.status(result.success ? 201 : 400).json(result);
+});
+
+// --- Image Saving API ---
+app.post('/save-image', (req, res) => {
+    const { imageData, name, type } = req.body;
+    const base64Data = imageData.replace(/^data:image\/jpeg;base64,/, '');
+    const date = new Date().toISOString().split('T')[0];
+    let filePath;
+
+    switch (type) {
+        case 'registration':
+            filePath = path.join(registrationImagesDir, `${name}-${date}.jpg`);
+            break;
+        case 'checkIn':
+            filePath = path.join(attendanceMasukImagesDir, `${name}-${date}.jpg`);
+            break;
+        case 'checkOut':
+            filePath = path.join(attendanceKeluarImagesDir, `${name}-${date}.jpg`);
+            break;
+        default:
+            console.error('Invalid image type received:', type);
+            return res.status(400).json({ message: 'Invalid image type.' });
+    }
+
+    // Ensure directory exists before writing file
+    ensureDirectoryExistence(path.dirname(filePath));
+
+    fs.writeFile(filePath, base64Data, 'base64', (err) => {
+        if (err) {
+            console.error('Error saving image:', err);
+            return res.status(500).json({ message: 'Failed to save image.' });
+        }
+        console.log(`Image saved successfully: ${filePath}`);
+        res.status(200).json({ message: 'Image saved successfully.' });
+    });
 });
 
 app.listen(port, () => {

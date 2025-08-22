@@ -1,4 +1,3 @@
-
 document.addEventListener('DOMContentLoaded', () => {
     const video = document.getElementById('video');
     const registerButton = document.getElementById('registerButton');
@@ -55,6 +54,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!response.ok) throw new Error((await response.json()).message);
             showToast(`Berhasil ${action === 'check-in' ? 'absen masuk' : 'absen keluar'}!`, 'success');
             fetchAndDisplayRecords();
+            // Capture image after successful check-in/check-out
+            await captureAndSendImage(action === 'check-in' ? 'checkIn' : 'checkOut', detectedName, video, document.getElementById('canvas'));
         } catch (err) { showToast(err.message, 'error'); }
         hideModal();
     }
@@ -62,6 +63,35 @@ document.addEventListener('DOMContentLoaded', () => {
     checkinButton.addEventListener('click', () => performCheck('check-in'));
     checkoutButton.addEventListener('click', () => performCheck('check-out'));
     cancelButton.addEventListener('click', hideModal);
+
+    // --- Image Capture Function ---
+    async function captureAndSendImage(type, name, videoElement, canvasElement) {
+        const context = canvasElement.getContext('2d');
+        // Temporarily resize canvas to video dimensions for accurate capture
+        const originalWidth = canvasElement.width;
+        const originalHeight = canvasElement.height;
+        canvasElement.width = videoElement.videoWidth;
+        canvasElement.height = videoElement.videoHeight;
+
+        context.drawImage(videoElement, 0, 0, videoElement.videoWidth, videoElement.videoHeight);
+        const imageData = canvasElement.toDataURL('image/jpeg', 0.9);
+
+        // Restore original canvas dimensions
+        canvasElement.width = originalWidth;
+        canvasElement.height = originalHeight;
+
+        try {
+            const response = await fetch('/save-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ imageData, name, type })
+            });
+            if (!response.ok) throw new Error((await response.json()).message);
+            console.log(`Image for ${type} saved successfully.`);
+        } catch (error) {
+            console.error(`Failed to save image for ${type}:`, error);
+        }
+    }
 
     // --- Liveness Detection ---
     function getEyeAspectRatio(landmarks) {
@@ -255,7 +285,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!response.ok) throw new Error((await response.json()).message);
                 showToast('Wajah berhasil didaftarkan!', 'success');
                 loadRegisteredFaces();
-            } catch (error) { showToast(`Gagal: ${error.message}`, 'error'); }
+                // Capture image after successful registration
+                await captureAndSendImage('registration', name, video, document.getElementById('canvas'));
+            } catch (error) {
+                showToast(`Gagal: ${error.message}`, 'error');
+            }
         } else {
             showToast(`Verifikasi gagal (kedip: ${livenessResult.blink ? 'berhasil' : 'gagal'}, mulut: ${livenessResult.mouthOpen ? 'berhasil' : 'gagal'}, angguk: ${livenessResult.nod ? 'berhasil' : 'gagal'}). Coba lagi.`, 'error');
         }
